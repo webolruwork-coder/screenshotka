@@ -105,6 +105,12 @@ if [ -z "$SIGN_HASH" ]; then
     echo "✗ Не удалось найти сертификат: $SIGN_ID в $SIGN_KC" >&2
     exit 1
 fi
+if [ -n "${CODE_SIGN_CERT_SHA1:-}" ] && [ "$SIGN_HASH" != "$CODE_SIGN_CERT_SHA1" ]; then
+    echo "✗ Найден другой сертификат подписи: $SIGN_HASH" >&2
+    echo "  Ожидался: $CODE_SIGN_CERT_SHA1" >&2
+    echo "  Нельзя выпускать обновление с другим certificate leaf: у пользователей слетят macOS-разрешения." >&2
+    exit 1
+fi
 
 echo "→ Подпись стабильным сертификатом: $SIGN_ID ($SIGN_HASH)"
 # Sparkle нужно переподписать ТЕМ ЖЕ сертификатом, что и приложение: его XPC-сервисы

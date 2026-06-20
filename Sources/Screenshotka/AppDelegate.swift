@@ -66,11 +66,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                name: .screenshotkaHotkeysChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(openSettings),
                                                name: .screenshotkaOpenSettings, object: nil)
-        // Заранее просим доступ к записи экрана, чтобы первый снимок не упирался в ошибку.
-        if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
-        }
-
         // Диагностический self-test обновлений (только когда задан SK_UPDATE_SELFTEST).
         // Тихо проверяет фид без UI и печатает результат — для автоматической верификации.
         if ProcessInfo.processInfo.environment["SK_UPDATE_SELFTEST"] != nil {
@@ -264,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginAreaCapture(_ purpose: AreaCapturePurpose) {
+        guard ensureScreenCaptureAccess() else { return }
         // overlay==nil закрывает повторное нажатие, когда оверлей УЖЕ открыт.
         // pendingAreaCapture закрывает асинхронное окно заморозки (~300мс между нажатием
         // и появлением оверлея): без него каждое повторное нажатие запускало новый захват
@@ -314,6 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func captureWindow() {
+        guard ensureScreenCaptureAccess() else { return }
         guard overlay == nil else { return }
         let controller = SelectionOverlayController()
         overlay = controller
@@ -325,6 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func captureFullscreen() {
+        guard ensureScreenCaptureAccess() else { return }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         guard let screen else { return }
@@ -333,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Прокрутка захвата: длинный снимок прокручиваемого окна.
     @objc func captureScrolling() {
+        guard ensureScreenCaptureAccess() else { return }
         guard overlay == nil else { return }
         // Синтетический скролл требует доступ «Универсальный доступ» (Accessibility).
         if !ScrollingCapture.isTrusted() {
@@ -377,6 +376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginVideoCapture(copyMode: Bool) {
         // Повторное нажатие во время записи — остановка (особенно если панель управления скрыта).
         if recorder.state != .idle { stopRecording(); return }
+        guard ensureScreenCaptureAccess() else { return }
         guard overlay == nil, recorderBar == nil, optionsBar == nil, !pendingRecording else { return }
         videoCopyMode = copyMode
 
@@ -801,7 +801,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("Ошибка захвата: \(error)")
         let alert = NSAlert()
         alert.messageText = NSLocalizedString("Не удалось сделать снимок", comment: "")
-        alert.informativeText = String(format: NSLocalizedString("Проверьте разрешение на запись экрана в Системных настройках → Конфиденциальность и безопасность → Запись экрана.\n\n%@", comment: ""), error.localizedDescription)
+        alert.informativeText = String(format: NSLocalizedString("Проверьте разрешение на запись экрана в Системных настройках → Конфиденциальность и безопасность → Запись экрана.\nЕсли галочка уже включена, удалите «Скриншотилку» из списка кнопкой «−», добавьте/включите её заново и перезапустите приложение.\n\n%@", comment: ""), error.localizedDescription)
         alert.addButton(withTitle: NSLocalizedString("Открыть настройки", comment: ""))
         alert.addButton(withTitle: NSLocalizedString("Отмена", comment: ""))
         NSApp.activate(ignoringOtherApps: true)
@@ -810,6 +810,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSWorkspace.shared.open(url)
             }
         }
+    }
+
+    private func ensureScreenCaptureAccess() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+
+        if CGRequestScreenCaptureAccess(), CGPreflightScreenCaptureAccess() {
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.messageText = NSLocalizedString("Нужен доступ к записи экрана", comment: "")
+        alert.informativeText = NSLocalizedString("Откройте Системные настройки → Конфиденциальность и безопасность → Запись экрана и включите «Скриншотилку».\n\nЕсли галочка уже включена, но приложение всё равно не снимает экран, удалите «Скриншотилку» из списка кнопкой «−», добавьте/включите её заново и перезапустите приложение. Такое бывает после обновления, подписанного другим сертификатом.", comment: "")
+        alert.addButton(withTitle: NSLocalizedString("Открыть настройки", comment: ""))
+        alert.addButton(withTitle: NSLocalizedString("Отмена", comment: ""))
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        return false
     }
 
     // MARK: - Menu actions
