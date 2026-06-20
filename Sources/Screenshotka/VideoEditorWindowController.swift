@@ -879,7 +879,18 @@ final class TrimTimelineView: NSView {
         if !thumbs.isEmpty {
             let tw = bounds.width / CGFloat(thumbs.count)
             for (i, img) in thumbs.enumerated() {
-                img.draw(in: NSRect(x: bounds.minX + CGFloat(i) * tw, y: 0, width: tw, height: bounds.height))
+                let tile = NSRect(x: bounds.minX + CGFloat(i) * tw, y: 0, width: tw, height: bounds.height)
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: tile).addClip()
+                img.draw(
+                    in: aspectFillRect(for: img.size, in: tile),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1,
+                    respectFlipped: true,
+                    hints: [.interpolation: NSImageInterpolation.high]
+                )
+                NSGraphicsContext.restoreGraphicsState()
             }
         }
         // затемнение вне выделения
@@ -905,5 +916,25 @@ final class TrimTimelineView: NSView {
         let knob = NSBezierPath(ovalIn: NSRect(x: px - 5, y: -1, width: 10, height: 10))
         NSColor.white.setFill(); knob.fill()
         NSColor(white: 0, alpha: 0.25).setStroke(); knob.lineWidth = 1; knob.stroke()
+    }
+
+    private func aspectFillRect(for imageSize: NSSize, in rect: NSRect) -> NSRect {
+        guard imageSize.width > 0, imageSize.height > 0, rect.width > 0, rect.height > 0 else { return rect }
+
+        let imageAspect = imageSize.width / imageSize.height
+        let rectAspect = rect.width / rect.height
+        let drawSize: NSSize
+        if imageAspect > rectAspect {
+            drawSize = NSSize(width: rect.height * imageAspect, height: rect.height)
+        } else {
+            drawSize = NSSize(width: rect.width, height: rect.width / imageAspect)
+        }
+
+        return NSRect(
+            x: rect.midX - drawSize.width / 2,
+            y: rect.midY - drawSize.height / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
     }
 }
