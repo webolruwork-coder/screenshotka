@@ -154,6 +154,12 @@ final class SelectionView: NSView {
         trackingAreas.forEach(removeTrackingArea)
         window?.invalidateCursorRects(for: self)
     }
+
+    private func complete(_ result: SelectionResult) {
+        teardown()
+        SelectionOverlayController.resetCursorToArrow()
+        onResult?(result)
+    }
     private weak var ownerWindow: OverlayWindow?
     private var frozenNSImage: NSImage?
 
@@ -307,6 +313,7 @@ final class SelectionView: NSView {
     override func mouseEntered(with event: NSEvent) { if !dismissed { activeCursor.set() } }
 
     override func mouseMoved(with event: NSEvent) {
+        guard !dismissed else { return }
         cursorPoint = convert(event.locationInWindow, from: nil)
         if isWindowSelecting { updateHoveredWindow() }
         activeCursor.set()   // переустанавливаем: иначе при перерисовке курсор слетает на стрелку
@@ -314,6 +321,7 @@ final class SelectionView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        guard !dismissed else { return }
         let p = convert(event.locationInWindow, from: nil)
         cursorPoint = p
         if isWindowSelecting {
@@ -328,6 +336,7 @@ final class SelectionView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard !dismissed else { return }
         guard !isWindowSelecting, let start = dragStart else { return }
         let p = convert(event.locationInWindow, from: nil)
         cursorPoint = p
@@ -336,6 +345,7 @@ final class SelectionView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard !dismissed else { return }
         guard !isWindowSelecting else { return }
         isDragging = false
         dragStart = nil
@@ -346,11 +356,11 @@ final class SelectionView: NSView {
             if mode == .video { emitVideoArea(local: sel) } else { confirmArea(sel) }
         } else if mode == .video {
             // Видео: клик без выделения — записываем весь экран (как договорились).
-            onResult?(.videoArea(screenRef.frame, screenRef))
+            complete(.videoArea(screenRef.frame, screenRef))
         } else {
             // Скриншот: клик без выделения — отменяем, как в стандартной скриншотилке macOS
             // (а не «зависаем» в оверлее в ожидании).
-            onResult?(.cancelled)
+            complete(.cancelled)
         }
     }
 
@@ -369,7 +379,7 @@ final class SelectionView: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53:                                   // Esc — отмена
-            onResult?(.cancelled)
+            complete(.cancelled)
         case 49 where mode == .video:              // Пробел — переключить «окно ↔ область» (как в CleanShot)
             onToggleWindowSubmode?()               // контроллер применит подрежим ко всем мониторам
         default:
@@ -383,28 +393,28 @@ final class SelectionView: NSView {
             let g = CGRect(x: hovered.localRect.minX + screenRef.frame.minX,
                            y: hovered.localRect.minY + screenRef.frame.minY,
                            width: hovered.localRect.width, height: hovered.localRect.height)
-            onResult?(.videoArea(g, screenRef))
+            complete(.videoArea(g, screenRef))
         } else {
-            onResult?(.window(hovered.id))
+            complete(.window(hovered.id))
         }
     }
 
     private func emitVideoArea(local sel: CGRect) {
         let g = CGRect(x: sel.minX + screenRef.frame.minX, y: sel.minY + screenRef.frame.minY,
                        width: sel.width, height: sel.height)
-        onResult?(.videoArea(g, screenRef))
+        complete(.videoArea(g, screenRef))
     }
 
     private func confirmArea(_ sel: CGRect) {
         // Заморозка: вырезаем сразу из кадра. Иначе — живой режим (вырезка после закрытия).
         if let cropped = cropFrozen(sel) {
-            onResult?(.image(cropped, screenRef.backingScaleFactor))
+            complete(.image(cropped, screenRef.backingScaleFactor))
             return
         }
         let global = CGRect(x: sel.minX + screenRef.frame.minX,
                             y: sel.minY + screenRef.frame.minY,
                             width: sel.width, height: sel.height)
-        onResult?(.area(global, screenRef))
+        complete(.area(global, screenRef))
     }
 
     // MARK: - Window hover
