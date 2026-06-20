@@ -11,6 +11,7 @@ final class CameraBubble: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     private let queue = DispatchQueue(label: "screenshotka.camera")
     private let firstFrameLock = NSLock()
     private var firstFrameContinuation: CheckedContinuation<Void, Never>?
+    private var previewLayer: AVCaptureVideoPreviewLayer?
 
     var windowNumber: Int { panel?.windowNumber ?? 0 }
 
@@ -49,6 +50,8 @@ final class CameraBubble: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         preview.borderWidth = 3
         preview.borderColor = NSColor(white: 1, alpha: 0.9).cgColor
         view.layer?.addSublayer(preview)
+        previewLayer = preview
+        applyMirrorPreview()
         p.contentView = view
 
         // Левый-нижний угол области (внутри, чтобы попасть в кадр).
@@ -65,10 +68,17 @@ final class CameraBubble: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             firstFrameLock.unlock()
 
             queue.async { [weak self] in self?.session.startRunning() }
+            DispatchQueue.main.async { [weak self] in self?.applyMirrorPreview() }
             queue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 self?.finishFirstFrameWait()
             }
         }
+    }
+
+    private func applyMirrorPreview() {
+        guard let connection = previewLayer?.connection, connection.isVideoMirroringSupported else { return }
+        connection.automaticallyAdjustsVideoMirroring = false
+        connection.isVideoMirrored = true
     }
 
     private func finishFirstFrameWait() {
