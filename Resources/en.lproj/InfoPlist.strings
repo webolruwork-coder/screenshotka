@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "Records microphone audio during screen recording.";
+"NSCameraUsageDescription" = "Shows the camera in the corner during screen recording.";

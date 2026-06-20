@@ -1,0 +1,14 @@
+.DS_Store
+.claude/settings.local.json
+.build/
+.home/
+
+build/
+dist/
+releases/
+_incoming_archives/
+
+*.tar.gz
+*.zip
+
+Скриншотилка-sparkle-PRIVATE-KEY-backup.txt
