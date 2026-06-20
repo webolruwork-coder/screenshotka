@@ -5,6 +5,10 @@
 # Без sudo и без пароля логина — используется выделенный keychain с известным паролем.
 set -e
 
+if [ -f ./sparkle.config ]; then
+    source ./sparkle.config
+fi
+
 IDENTITY="Screenshotka Dev"
 KC_PW="screenshotka-dev"
 KC="$HOME/Library/Keychains/screenshotka-signing.keychain-db"
@@ -21,8 +25,24 @@ trap 'rm -rf "$TMP"' EXIT
 # приватного ключа без требования trust-valid статуса.
 if security find-certificate -c "$IDENTITY" "$KC" >/dev/null 2>&1 &&
    security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "$IDENTITY"; then
-    echo "✓ Сертификат уже существует: $IDENTITY — пропускаю."
+    LEAF_HASH=$(security find-certificate -c "$IDENTITY" -Z "$KC" 2>/dev/null | awk '/SHA-1 hash:/{print $3; exit}')
+    if [ -n "${CODE_SIGN_CERT_SHA1:-}" ] && [ "$LEAF_HASH" != "$CODE_SIGN_CERT_SHA1" ]; then
+        echo "✗ Найден другой certificate leaf для $IDENTITY: $LEAF_HASH" >&2
+        echo "  Ожидался: $CODE_SIGN_CERT_SHA1" >&2
+        echo "  Не пересоздаю подпись: иначе у пользователей снова слетят macOS-разрешения." >&2
+        exit 1
+    fi
+    echo "✓ Сертификат уже существует: $IDENTITY ($LEAF_HASH) — пропускаю."
     exit 0
+fi
+
+if [ -n "${CODE_SIGN_CERT_SHA1:-}" ] && [ "${SCREENSHOTKA_ALLOW_NEW_SIGNING_IDENTITY:-}" != "1" ]; then
+    echo "✗ Ожидаемый certificate leaf не найден: $CODE_SIGN_CERT_SHA1" >&2
+    echo "  Нельзя автоматически создавать новый сертификат: это изменит designated requirement" >&2
+    echo "  и сбросит macOS-разрешения у пользователей." >&2
+    echo "  Восстановите $KC из бэкапа или, если вы сознательно начинаете новую линию подписи," >&2
+    echo "  запустите: SCREENSHOTKA_ALLOW_NEW_SIGNING_IDENTITY=1 ./setup-signing.sh" >&2
+    exit 1
 fi
 
 echo "→ Генерация самоподписанного сертификата (code signing)"

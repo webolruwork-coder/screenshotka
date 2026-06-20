@@ -89,8 +89,9 @@ done < <(find "$APP/Contents/Frameworks/Sparkle.framework" -type f)
 #
 # Важно: НЕ откатываемся молча на ad-hoc и НЕ делаем `tccutil reset`.
 # Ad-hoc подпись меняется от сборки к сборке и заставляет macOS снова просить
-# разрешения. Если сертификата нет — автоматически создаём его через
-# setup-signing.sh (без sudo, в отдельном keychain).
+# разрешения. Если сертификата нет, setup-signing.sh восстановит его только для
+# новой линии подписи; при зафиксированном CODE_SIGN_CERT_SHA1 сборка упадёт,
+# чтобы случайно не выпустить обновление с другим certificate leaf.
 SIGN_KC="$HOME/Library/Keychains/screenshotka-signing.keychain-db"
 SIGN_ID="Screenshotka Dev"
 if ! security find-certificate -c "$SIGN_ID" "$SIGN_KC" >/dev/null 2>&1 ||
