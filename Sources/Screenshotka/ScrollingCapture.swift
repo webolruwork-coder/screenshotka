@@ -85,8 +85,12 @@ enum ScrollingCapture {
 
     private static func warpCursor(toCocoa p: CGPoint) {
         // Cocoa (origin внизу-слева, глобально) → CG глобальные (origin сверху-слева).
-        let maxY = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
-        CGWarpMouseCursorPosition(CGPoint(x: p.x, y: maxY - p.y))
+        // Флип считаем от высоты ОСНОВНОГО экрана (screens.first — тот, что в (0,0)):
+        // CG-origin привязан именно к нему. Брать max maxY по всем мониторам нельзя —
+        // если второй дисплей стоит ВЫШЕ основного, курсор уезжал на его высоту вниз,
+        // и скролл-события уходили мимо окна (длинный снимок молча не работал).
+        let primaryH = NSScreen.screens.first?.frame.maxY ?? 0
+        CGWarpMouseCursorPosition(CGPoint(x: p.x, y: primaryH - p.y))
         CGAssociateMouseAndMouseCursorPosition(1)
     }
 

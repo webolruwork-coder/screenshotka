@@ -155,7 +155,13 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 writer.finishWriting { cont.resume() }
             }
-            result = (writer.status == .completed) ? url : nil
+            if writer.status == .completed {
+                result = url
+            } else {
+                // Финализация не удалась (например, диск заполнился под конец): на диске
+                // остаётся битый .mp4 — удаляем, чтобы не плодить мусор в папке сохранения.
+                if let u = url { try? FileManager.default.removeItem(at: u) }
+            }
         } else {
             // Ни одного кадра — файла нет/пустой, удаляем.
             if writer?.status == .writing { writer?.cancelWriting() }

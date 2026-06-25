@@ -432,7 +432,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             // завершения и запускает свежий — тот подхватит новый AppleLanguages.
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", "sleep 0.4; open \"\(Bundle.main.bundlePath)\""]
+            // Путь передаём ОТДЕЛЬНЫМ аргументом ($0), а не подставляем в строку команды:
+            // expand переменной шелл НЕ ре-токенизирует, поэтому путь с кавычками/$/`
+            // не может ничего сломать или выполнить. sleep даёт текущему инстансу выйти,
+            // иначе open реактивирует умирающую копию вместо запуска свежей.
+            p.arguments = ["-c", "sleep 0.4; open \"$0\"", Bundle.main.bundlePath]
             try? p.run()
             NSApp.terminate(nil)
         }
