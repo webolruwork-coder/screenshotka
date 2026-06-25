@@ -84,13 +84,41 @@ final class SelectionOverlayController {
             let infos = ScreenCapturer.onscreenWindows()
             views.forEach { $0.provideWindows(infos) }
         }
-        // NSCursor.set() действует только у АКТИВНОГО приложения, а activate() асинхронна:
-        // ранние set() уходят в пустоту, и прицел появлялся лишь после движения мыши.
-        // Переустанавливаем курсор в момент реальной активации.
+        // Прицел должен появиться СРАЗУ под неподвижной мышью. Делаем это и сейчас
+        // (если приложение уже активно), и в момент реальной активации, и парой
+        // коротких отложенных повторов — чтобы перекрыть гонку с async-активацией.
+        forceReticleNow()
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.views.forEach { $0.refreshCursor() }
+            self?.forceReticleNow()
         }
+        for delay in [0.05, 0.15] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.forceReticleNow() }
+        }
+    }
+
+    /// Заставляет курсор-«мишень» отрисоваться немедленно, не дожидаясь движения мыши.
+    ///
+    /// `NSCursor.set()` лишь запоминает «текущий курсор» — его картинку window server
+    /// перерисовывает только по cursor-update-событию (движение мыши, переоценка
+    /// tracking area). Оверлей же возникает под НЕПОДВИЖНЫМ курсором, да и
+    /// `NSApp.activate()` асинхронна, поэтому раньше прицел всплывал лишь после
+    /// первого движения, причём непредсказуемо.
+    ///
+    /// Ставим курсор режима на всех вью и «толкаем» мышь в ЕЁ ЖЕ текущую позицию:
+    /// сдвиг нулевой (визуально незаметно), но система шлёт cursor-update и прицел
+    /// рисуется сразу. Поскольку варп всегда в текущую точку, повторные/отложенные
+    /// вызовы никогда не дёргают курсор — в т.ч. если выделение уже началось.
+    /// `CGWarpMouseCursorPosition` не требует TCC-разрешений (в отличие от
+    /// синтетических CGEvent), а `CGAssociateMouseAndMouseCursorPosition(true)`
+    /// снимает кратковременную «заморозку» движения после варпа.
+    private func forceReticleNow() {
+        guard !finished, !windows.isEmpty else { return }
+        views.forEach { $0.refreshCursor() }
+        guard let primary = NSScreen.screens.first else { return }
+        let loc = NSEvent.mouseLocation                      // Cocoa: origin внизу-слева
+        CGWarpMouseCursorPosition(CGPoint(x: loc.x, y: primary.frame.maxY - loc.y))
+        CGAssociateMouseAndMouseCursorPosition(boolean_t(1))
     }
 
     private func finish(_ result: SelectionResult) {
