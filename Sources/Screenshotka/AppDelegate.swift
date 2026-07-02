@@ -303,6 +303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleAreaCaptured(cg, purpose: purpose, scale: scale)   // заморозка — кадр готов
             case .area(let rect, let screen):
                 Task { [weak self] in await self?.performAreaCapture(rect: rect, screen: screen, purpose: purpose) }
+            case .window(let id):
+                // Пробел в оверлее области → выбор окна (как ⌘⇧4 → Пробел). Purpose
+                // сохраняем: «снять область в буфер» + Пробел копирует снимок окна и т.д.
+                Task { [weak self] in await self?.performWindowCapture(id, purpose: purpose) }
             default:
                 break
             }
@@ -667,7 +671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch { await MainActor.run { self.handleError(error) } }
     }
 
-    private func performWindowCapture(_ id: CGWindowID) async {
+    private func performWindowCapture(_ id: CGWindowID, purpose: AreaCapturePurpose = .standard) async {
         do {
             // Масштаб — экрана, на котором реально находится окно (mixed-DPI),
             // а не NSScreen.main: иначе опция «1×» уменьшала бы не тот кадр.
@@ -680,7 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let scale = screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             let cg = try await ScreenCapturer.capture(windowID: id)
-            await MainActor.run { self.handleCaptured(cg, scale: scale) }
+            await MainActor.run { self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
         } catch { await MainActor.run { self.handleError(error) } }
     }
 

@@ -63,6 +63,7 @@
 "Клавиатура:" = "Teclado:";
 "Кликните и нажмите новое сочетание. Esc — отмена, Delete — очистка." = "Haz clic y pulsa un atajo nuevo. Esc — cancelar, Delete — borrar.";
 "Кликните по окну для записи · Пробел — назад · Esc — отмена" = "Haz clic en una ventana para grabar · Espacio — atrás · Esc — cancelar";
+"Кликните по окну — снимок · Пробел — назад · Esc — отмена" = "Haz clic en una ventana para capturarla · Espacio — atrás · Esc — cancelar";
 "Кликните по сочетанию справа, затем нажмите новую комбинацию. Esc — отмена, Delete — очистка." = "Haz clic en el atajo de la derecha y pulsa una combinación nueva. Esc — cancelar, Delete — borrar.";
 "Копировать" = "Copiar";
 "Копировать в буфер" = "Copiar al portapapeles";

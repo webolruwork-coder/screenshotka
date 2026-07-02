@@ -31,7 +31,7 @@ final class SelectionOverlayController {
     private var views: [SelectionView] = []
     private var completion: ((SelectionResult) -> Void)?
     private var finished = false
-    private var videoWindowSubmode = false   // общий «Пробел → окно» для всех мониторов
+    private var windowSubmode = false   // общий «Пробел → окно» для всех мониторов (видео и область)
     private var activationObserver: NSObjectProtocol?
 
     func present(mode: Mode, frozen: [CGDirectDisplayID: CGImage] = [:],
@@ -69,8 +69,11 @@ final class SelectionOverlayController {
             // иначе на втором мониторе подсказка/режим не менялись.
             view.onToggleWindowSubmode = { [weak self] in
                 guard let self else { return }
-                self.videoWindowSubmode.toggle()
-                self.views.forEach { $0.setWindowSubmode(self.videoWindowSubmode) }
+                self.windowSubmode.toggle()
+                self.views.forEach { $0.setWindowSubmode(self.windowSubmode) }
+                // Курсор «мишень ↔ камера» должен смениться сразу по Пробелу, а не после
+                // движения мыши (см. forceReticleNow — та же история, что при показе оверлея).
+                self.forceReticleNow()
             }
             window.contentView = view
             window.setFrame(screen.frame, display: true)
@@ -200,22 +203,22 @@ final class SelectionView: NSView {
     private var windowInfos: [WindowInfo] = []
     private var hoveredWindow: (id: CGWindowID, localRect: CGRect)?
 
-    /// Видео: по умолчанию весь экран; перетаскивание — область; Пробел — выбор окна
-    /// (как в CleanShot/стандартной записи macOS). В этом подрежиме ведём себя как .window.
+    /// Пробел переключает в выбор окна (как в системной ⌘⇧4 → Пробел): для видео —
+    /// записать окно, для области — снять окно целиком. В подрежиме ведём себя как .window.
     private var windowSubmode = false
-    private var isWindowSelecting: Bool { mode == .window || (mode == .video && windowSubmode) }
+    private var isWindowSelecting: Bool { mode == .window || windowSubmode }
     /// Пробел: контроллер синхронизирует подрежим на всех мониторах.
     var onToggleWindowSubmode: (() -> Void)?
 
     func setWindowSubmode(_ on: Bool) {
-        guard mode == .video, windowSubmode != on else { return }
+        guard mode != .window, windowSubmode != on else { return }
         windowSubmode = on
         selection = nil
         dragStart = nil
         if on {
-            if windowInfos.isEmpty {
-                windowInfos = ScreenCapturer.onscreenWindows().filter { $0.frameCocoa.intersects(screenRef.frame) }
-            }
+            // Пересканируем при каждом входе в подрежим: окна могли открыться/сдвинуться,
+            // пока оверлей был в режиме области — иначе подсветка ложится по устаревшим рамкам.
+            windowInfos = ScreenCapturer.onscreenWindows().filter { $0.frameCocoa.intersects(screenRef.frame) }
             updateHoveredWindow()
         } else {
             hoveredWindow = nil
@@ -408,7 +411,10 @@ final class SelectionView: NSView {
         switch event.keyCode {
         case 53:                                   // Esc — отмена
             complete(.cancelled)
-        case 49 where mode == .video:              // Пробел — переключить «окно ↔ область» (как в CleanShot)
+        // Пробел — переключить «окно ↔ область» (как в ⌘⇧4). Во время растягивания
+        // рамки игнорируем: иначе начатое выделение молча пропадало бы (в системной
+        // скриншотилке Пробел в этот момент двигает рамку — не наш случай).
+        case 49 where mode != .window && dragStart == nil:
             onToggleWindowSubmode?()               // контроллер применит подрежим ко всем мониторам
         default:
             break
@@ -482,7 +488,12 @@ final class SelectionView: NSView {
                 NSBezierPath(rect: h).fill()
                 drawFrame(h)
             }
-            if mode == .video { drawHint(NSLocalizedString("Кликните по окну для записи · Пробел — назад · Esc — отмена", comment: "")) }
+            if mode == .video {
+                drawHint(NSLocalizedString("Кликните по окну для записи · Пробел — назад · Esc — отмена", comment: ""))
+            } else if mode == .area {
+                // Подрежим по Пробелу из выбора области: подсказываем обратный путь.
+                drawHint(NSLocalizedString("Кликните по окну — снимок · Пробел — назад · Esc — отмена", comment: ""))
+            }
             return
         }
 

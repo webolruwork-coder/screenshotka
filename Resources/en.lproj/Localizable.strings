@@ -63,6 +63,7 @@
 "Клавиатура:" = "Keyboard:";
 "Кликните и нажмите новое сочетание. Esc — отмена, Delete — очистка." = "Click and press a new shortcut. Esc — cancel, Delete — clear.";
 "Кликните по окну для записи · Пробел — назад · Esc — отмена" = "Click a window to record · Space — back · Esc — cancel";
+"Кликните по окну — снимок · Пробел — назад · Esc — отмена" = "Click a window to capture it · Space — back · Esc — cancel";
 "Кликните по сочетанию справа, затем нажмите новую комбинацию. Esc — отмена, Delete — очистка." = "Click the shortcut on the right, then press a new combination. Esc — cancel, Delete — clear.";
 "Копировать" = "Copy";
 "Копировать в буфер" = "Copy to clipboard";
