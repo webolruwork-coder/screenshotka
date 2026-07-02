@@ -67,7 +67,35 @@ enum ScreenCapturer {
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
 
-    /// Снимок окна по его идентификатору.
+    /// Снимок окна СИСТЕМНЫМ движком (`/usr/sbin/screencapture -l`) — тем же, что
+    /// использует ⌘⇧4 → Пробел. Холст, отступы под тень и сама тень совпадают со
+    /// стандартной скриншотилкой один в один по построению (и не разъедутся на новых
+    /// macOS). Наш SCK-путь задавал холст размером с окно, и SCK ужимал в него
+    /// окно+тень: появлялись кривые отступы и «сплюснутая» тень.
+    /// nil — утилита недоступна/отказала; тогда вызывающий падает на SCK-фолбэк.
+    static func captureWindowViaSystemTool(windowID: CGWindowID, includeShadow: Bool) async -> CGImage? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sk-window-\(windowID)-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        var args = ["-x", "-t", "png"]                 // -x — без системного звука (играем свой)
+        if !includeShadow { args.append("-o") }        // как настройка «Тень у снимка окна»
+        args += ["-l", String(windowID), url.path]
+        p.arguments = args
+        do { try p.run() } catch { return nil }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            p.terminationHandler = { _ in cont.resume() }
+        }
+        // Читаем в Data ДО удаления файла: CGImageSource с URL декодирует лениво.
+        guard p.terminationStatus == 0,
+              let data = try? Data(contentsOf: url), !data.isEmpty,
+              let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        return img
+    }
+
+    /// Снимок окна по его идентификатору (ScreenCaptureKit; фолбэк для captureWindowViaSystemTool).
     static func capture(windowID: CGWindowID) async throws -> CGImage {
         let content = try await shareableContent()
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {

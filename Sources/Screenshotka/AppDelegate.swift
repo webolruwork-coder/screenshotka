@@ -36,6 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// «Занято» во время асинхронного захвата заморозки перед показом оверлея области —
     /// защита от наслоения при быстрых повторных нажатиях хоткея.
     private var pendingAreaCapture = false
+    /// Приложение, активное ДО показа оверлея. Оверлей активирует нас (ради Esc/Пробела),
+    /// отчего окна в live-снимках выглядели неактивными: серый «светофор», урезанная тень.
+    /// Перед живым захватом возвращаем активацию — как у системной ⌘⇧4, которая фокус
+    /// вообще не забирает.
+    private var frontmostBeforeOverlay: NSRunningApplication?
 
     /// Sparkle: авто-обновления. `startingUpdater: true` сразу запускает фоновую проверку
     /// по расписанию (SUScheduledCheckInterval из Info.plist) и валидирует подписи EdDSA.
@@ -265,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // и появлением оверлея): без него каждое повторное нажатие запускало новый захват
         // экрана и оверлеи/кадры наслаивались — «ерунда» при быстрых нажатиях.
         guard overlay == nil, !pendingAreaCapture else { return }
+        frontmostBeforeOverlay = NSWorkspace.shared.frontmostApplication
         if Settings.shared.freezeScreen {
             pendingAreaCapture = true
             // Прицел — сразу, как в системной ⌘⇧4: заморозка занимает заметное время,
@@ -316,6 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func captureWindow() {
         guard ensureScreenCaptureAccess() else { return }
         guard overlay == nil else { return }
+        frontmostBeforeOverlay = NSWorkspace.shared.frontmostApplication
         let controller = SelectionOverlayController()
         overlay = controller
         controller.present(mode: .window) { [weak self] result in
@@ -663,7 +670,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = button
     }
 
+    /// Возвращает активацию приложению, которое было активно до оверлея, и даёт
+    /// window server время перерисовать «хром» окон (цветной светофор, полная тень).
+    /// Иначе на live-снимках окна выглядели неактивными — не как у системной ⌘⇧4.
+    private func restoreFrontmostBeforeCapture(waitNanos: UInt64) async {
+        let restored = await MainActor.run { () -> Bool in
+            defer { frontmostBeforeOverlay = nil }
+            guard let prev = frontmostBeforeOverlay, !prev.isTerminated,
+                  prev.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+            return prev.activate()
+        }
+        if restored { try? await Task.sleep(nanoseconds: waitNanos) }
+    }
+
     private func performAreaCapture(rect: CGRect, screen: NSScreen, purpose: AreaCapturePurpose = .standard) async {
+        await restoreFrontmostBeforeCapture(waitNanos: 150_000_000)
         do {
             let cg = try await ScreenCapturer.capture(rectInScreen: rect, on: screen)
             let scale = screen.backingScaleFactor
@@ -672,17 +693,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performWindowCapture(_ id: CGWindowID, purpose: AreaCapturePurpose = .standard) async {
-        do {
-            // Масштаб — экрана, на котором реально находится окно (mixed-DPI),
-            // а не NSScreen.main: иначе опция «1×» уменьшала бы не тот кадр.
-            let windowFrame = ScreenCapturer.onscreenWindows().first { $0.id == id }?.frameCocoa
-            let screen = windowFrame.flatMap { f in
-                NSScreen.screens.max { a, b in
-                    let ia = a.frame.intersection(f), ib = b.frame.intersection(f)
-                    return ia.width * ia.height < ib.width * ib.height
-                }
+        // Дольше, чем у области: кроссфейд «светофора» и дорастание полной тени
+        // занимают ~0.3–0.4 с (замерено: на 300 мс кнопки ловились полунасыщенными).
+        await restoreFrontmostBeforeCapture(waitNanos: 550_000_000)
+        // Масштаб — экрана, на котором реально находится окно (mixed-DPI),
+        // а не NSScreen.main: иначе опция «1×» уменьшала бы не тот кадр.
+        let windowFrame = ScreenCapturer.onscreenWindows().first { $0.id == id }?.frameCocoa
+        let screen = windowFrame.flatMap { f in
+            NSScreen.screens.max { a, b in
+                let ia = a.frame.intersection(f), ib = b.frame.intersection(f)
+                return ia.width * ia.height < ib.width * ib.height
             }
-            let scale = screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        }
+        let scale = screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        // Системный движок (тот же, что у ⌘⇧4 → Пробел): холст/отступы/тень один в один.
+        if let cg = await ScreenCapturer.captureWindowViaSystemTool(
+            windowID: id, includeShadow: Settings.shared.screenshotWindowShadow) {
+            await MainActor.run { self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
+            return
+        }
+        // Фолбэк — ScreenCaptureKit (например, если утилита screencapture отказала).
+        do {
             let cg = try await ScreenCapturer.capture(windowID: id)
             await MainActor.run { self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
         } catch { await MainActor.run { self.handleError(error) } }
