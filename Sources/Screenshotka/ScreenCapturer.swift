@@ -67,35 +67,15 @@ enum ScreenCapturer {
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
 
-    /// Снимок окна СИСТЕМНЫМ движком (`/usr/sbin/screencapture -l`) — тем же, что
-    /// использует ⌘⇧4 → Пробел. Холст, отступы под тень и сама тень совпадают со
-    /// стандартной скриншотилкой один в один по построению (и не разъедутся на новых
-    /// macOS). Наш SCK-путь задавал холст размером с окно, и SCK ужимал в него
-    /// окно+тень: появлялись кривые отступы и «сплюснутая» тень.
-    /// nil — утилита недоступна/отказала; тогда вызывающий падает на SCK-фолбэк.
-    static func captureWindowViaSystemTool(windowID: CGWindowID, includeShadow: Bool) async -> CGImage? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sk-window-\(windowID)-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        var args = ["-x", "-t", "png"]                 // -x — без системного звука (играем свой)
-        if !includeShadow { args.append("-o") }        // как настройка «Тень у снимка окна»
-        args += ["-l", String(windowID), url.path]
-        p.arguments = args
-        do { try p.run() } catch { return nil }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            p.terminationHandler = { _ in cont.resume() }
-        }
-        // Читаем в Data ДО удаления файла: CGImageSource с URL декодирует лениво.
-        guard p.terminationStatus == 0,
-              let data = try? Data(contentsOf: url), !data.isEmpty,
-              let src = CGImageSourceCreateWithData(data as CFData, nil),
-              let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
-        return img
-    }
-
-    /// Снимок окна по его идентификатору (ScreenCaptureKit; фолбэк для captureWindowViaSystemTool).
+    /// Снимок окна по его идентификатору (ScreenCaptureKit).
+    ///
+    /// С тенью: холсту SCK нельзя задать размер «окно+тень» напрямую — размеры системной
+    /// тени нигде не публикуются, а холст размером с окно заставлял SCK ужимать в него
+    /// окно вместе с тенью (кривые отступы, «сплюснутая» тень). Замерено (лаборатория):
+    /// если холст БОЛЬШЕ контента, SCK кладёт «окно+тень» 1:1 без масштабирования,
+    /// прижав к верхнему-левому углу. Поэтому снимаем с запасом и обрезаем по отступам,
+    /// замеренным на самом кадре — самокалибровка, без захардкоженных размеров тени
+    /// (переживёт смену теней в будущих macOS). Итог совпадает с ⌘⇧4 → Пробел.
     static func capture(windowID: CGWindowID) async throws -> CGImage {
         let content = try await shareableContent()
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
@@ -104,13 +84,58 @@ enum ScreenCapturer {
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
-        config.width = Int((window.frame.width * scale).rounded())
-        config.height = Int((window.frame.height * scale).rounded())
+        let wPx = Int((window.frame.width * scale).rounded())
+        let hPx = Int((window.frame.height * scale).rounded())
+        let includeShadow = Settings.shared.screenshotWindowShadow
+        // Запас под тень: сегодняшняя системная ~112px @2x, берём с многократным запасом.
+        let pad = includeShadow ? Int(300 * scale) : 0
+        config.width = wPx + pad
+        config.height = hPx + pad
         config.showsCursor = false   // курсор в снимок не включаем (как в стандартной скриншотилке)
-        config.ignoreShadowsSingleWindow = !Settings.shared.screenshotWindowShadow
+        config.ignoreShadowsSingleWindow = !includeShadow
         config.backgroundColor = .clear
         config.captureResolution = .best
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        guard includeShadow else { return img }
+        return cropToSystemShadowCanvas(img, windowPxW: wPx, windowPxH: hPx) ?? img
+    }
+
+    /// Обрезка кадра «окно+тень с запасом» до системного холста (как у ⌘⇧4 → Пробел).
+    ///
+    /// Контент прижат к верхнему-левому углу. Отступы слева (L) и сверху (T) меряем по
+    /// резкой непрозрачной кромке окна; справа тень симметрична (R = L); снизу — из
+    /// геометрии системной тени «гауссов блюр радиуса r со сдвигом d вниз»:
+    /// L = R = r, T = r − d, B = r + d ⇒ B = 2L − T. Сходится с реальными полями
+    /// системной скриншотилки (111/111/76/147 @2x) с точностью ±1px.
+    private static func cropToSystemShadowCanvas(_ img: CGImage, windowPxW: Int, windowPxH: Int) -> CGImage? {
+        let W = img.width, H = img.height
+        guard W > 0, H > 0,
+              let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8,
+                                  bytesPerRow: W * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: W, height: H))
+        guard let data = ctx.data else { return nil }
+        let px = data.bindMemory(to: UInt8.self, capacity: W * H * 4)
+        // Память контекста: row 0 = визуальный ВЕРХ (см. GrayBuf в ScrollingCapture).
+        func opaque(_ x: Int, _ y: Int) -> Bool { px[(y * W + x) * 4 + 3] >= 250 }
+
+        // L: первый столбец с непрозрачным пикселем (боковые кромки окна вертикальны).
+        var L = -1
+        outerL: for x in 0..<min(W, windowPxW) {
+            var y = 0
+            while y < H { if opaque(x, y) { L = x; break outerL }; y += 5 }
+        }
+        // T: первая строка с непрозрачным пикселем (верхняя кромка горизонтальна).
+        var T = -1
+        outerT: for y in 0..<min(H, windowPxH) {
+            var x = 0
+            while x < W { if opaque(x, y) { T = y; break outerT }; x += 5 }
+        }
+        guard L >= 0, T >= 0, T <= L else { return nil }   // у системной тени всегда T < L (сдвиг вниз)
+        let B = 2 * L - T
+        let cw = min(W, windowPxW + 2 * L)
+        let ch = min(H, windowPxH + T + B)
+        return img.cropping(to: CGRect(x: 0, y: 0, width: cw, height: ch))
     }
 
     /// Список окон на экране в порядке сверху вниз (front→back) — для подсветки под

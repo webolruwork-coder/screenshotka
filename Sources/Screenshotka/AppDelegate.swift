@@ -706,13 +706,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let scale = screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        // Системный движок (тот же, что у ⌘⇧4 → Пробел): холст/отступы/тень один в один.
-        if let cg = await ScreenCapturer.captureWindowViaSystemTool(
-            windowID: id, includeShadow: Settings.shared.screenshotWindowShadow) {
-            await MainActor.run { self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
-            return
-        }
-        // Фолбэк — ScreenCaptureKit (например, если утилита screencapture отказала).
         do {
             let cg = try await ScreenCapturer.capture(windowID: id)
             await MainActor.run { self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
