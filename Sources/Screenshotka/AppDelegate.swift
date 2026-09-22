@@ -673,23 +673,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Возвращает активацию приложению, которое было активно до оверлея, и даёт
     /// window server время перерисовать «хром» окон (цветной светофор, полная тень).
     /// Иначе на live-снимках окна выглядели неактивными — не как у системной ⌘⇧4.
-    private func restoreFrontmostBeforeCapture(waitNanos: UInt64) async {
+    /// Возвращает активность приложению, бывшему активным до оверлея, ДО снимка —
+    /// чтобы «светофор» и тень окна вышли активными. Но активация поднимает окна этого
+    /// приложения над чужими: если для области `area` это изменило бы кадр (чужое окно
+    /// лежало над его окном), активность возвращаем только ПОСЛЕ снимка
+    /// (restoreFrontmostAfterCapture), иначе в кадр всплывает не то окно.
+    private func restoreFrontmostBeforeCapture(waitNanos: UInt64, area: CGRect? = nil) async {
         let restored = await MainActor.run { () -> Bool in
-            defer { frontmostBeforeOverlay = nil }
             guard let prev = frontmostBeforeOverlay, !prev.isTerminated,
-                  prev.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+                  prev.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+                frontmostBeforeOverlay = nil
+                return false
+            }
+            if let area, ScreenCapturer.activationWouldRaise(pid: prev.processIdentifier, into: area,
+                                                              windows: ScreenCapturer.onscreenWindows()) {
+                return false
+            }
+            frontmostBeforeOverlay = nil
             return prev.activate()
         }
         if restored { try? await Task.sleep(nanoseconds: waitNanos) }
     }
 
+    @MainActor private func restoreFrontmostAfterCapture() {
+        defer { frontmostBeforeOverlay = nil }
+        guard let prev = frontmostBeforeOverlay, !prev.isTerminated else { return }
+        prev.activate()
+    }
+
     private func performAreaCapture(rect: CGRect, screen: NSScreen, purpose: AreaCapturePurpose = .standard) async {
-        await restoreFrontmostBeforeCapture(waitNanos: 150_000_000)
+        await restoreFrontmostBeforeCapture(waitNanos: 150_000_000, area: rect)
         do {
             let cg = try await ScreenCapturer.capture(rectInScreen: rect, on: screen)
             let scale = screen.backingScaleFactor
-            await MainActor.run { self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
-        } catch { await MainActor.run { self.handleError(error) } }
+            await MainActor.run { self.restoreFrontmostAfterCapture(); self.handleAreaCaptured(cg, purpose: purpose, scale: scale) }
+        } catch { await MainActor.run { self.restoreFrontmostAfterCapture(); self.handleError(error) } }
     }
 
     private func performWindowCapture(_ id: CGWindowID, purpose: AreaCapturePurpose = .standard) async {

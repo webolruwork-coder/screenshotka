@@ -11,6 +11,7 @@ extension NSScreen {
 /// Информация об окне для режима «снять окно» (для подсветки под курсором).
 struct WindowInfo {
     let id: CGWindowID
+    let pid: pid_t
     let frameCocoa: CGRect   // глобальные координаты Cocoa (origin внизу-слева)
     let area: CGFloat
 }
@@ -159,9 +160,22 @@ enum ScreenCapturer {
             let onscreen = info[kCGWindowIsOnscreen as String] as? Bool ?? true
             guard alpha > 0.1, onscreen else { continue }
             guard let frame = cocoaFrame(forCGWindowBounds: bounds) else { continue }
-            result.append(WindowInfo(id: id, frameCocoa: frame, area: bounds.width * bounds.height))
+            result.append(WindowInfo(id: id, pid: pid, frameCocoa: frame, area: bounds.width * bounds.height))
         }
         return result   // порядок CGWindowList — front→back
+    }
+
+    /// Изменит ли активация приложения `pid` содержимое области `rect`.
+    ///
+    /// Активация поднимает key/main-окна приложения над окнами других приложений.
+    /// Если чужое окно лежало НАД окном этого приложения внутри снимаемой области,
+    /// после активации в кадр попадёт всплывшее окно, а не то, что видел пользователь
+    /// («снимок не того окна»). `windows` — front→back, как отдаёт onscreenWindows().
+    static func activationWouldRaise(pid: pid_t, into rect: CGRect, windows: [WindowInfo]) -> Bool {
+        guard let own = windows.first(where: { $0.pid == pid && $0.frameCocoa.intersects(rect) }) else { return false }
+        return windows.prefix { $0.id != own.id }.contains {
+            $0.pid != pid && $0.frameCocoa.intersects(rect) && $0.frameCocoa.intersects(own.frameCocoa)
+        }
     }
 
     // MARK: - Private
