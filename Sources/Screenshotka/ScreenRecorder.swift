@@ -11,6 +11,10 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     var onError: ((String) -> Void)?
     var onStopped: ((URL?) -> Void)?
+    /// Пик громкости микрофона (0…1) по каждому записанному буферу — для индикатора
+    /// «звук пишется» на панели записи. Вызывается на очереди рекордера.
+    var onMicLevel: ((Float) -> Void)?
+    var isMicEnabled: Bool { micEnabled }
 
     // Параметры текущей сессии (для рестарта).
     private var rect: CGRect = .zero
@@ -353,6 +357,39 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard sessionStarted, currentState == .recording, !resuming,
               let input = input, input.isReadyForMoreMediaData else { return }
         if let adj = Self.adjustTiming(sb, by: timeOffset) { input.append(adj) }
+        if input === micInput, let cb = onMicLevel { cb(Self.micPeak(sb)) }
+    }
+
+    /// Пиковая амплитуда буфера (0…1) по первому каналу. Только для индикатора:
+    /// смотрим каждый 4-й сэмпл, Float32 и Int16 — форматы, которые отдаёт SCK/CoreAudio.
+    static func micPeak(_ sb: CMSampleBuffer) -> Float {
+        guard let fd = CMSampleBufferGetFormatDescription(sb),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee else { return 0 }
+        // Размер списка буферов — ровно тот, что просит CoreMedia (список «с запасом»
+        // он отвергает как ArrayTooSmall, проверено), поэтому в два шага.
+        var needed = 0
+        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+                sb, bufferListSizeNeededOut: &needed, bufferListOut: nil, bufferListSize: 0,
+                blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
+                blockBufferOut: nil) == noErr, needed > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: needed, alignment: 16)
+        defer { raw.deallocate() }
+        let abl = raw.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var block: CMBlockBuffer?
+        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+                sb, bufferListSizeNeededOut: nil, bufferListOut: abl, bufferListSize: needed,
+                blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
+                blockBufferOut: &block) == noErr,
+              let buf = UnsafeMutableAudioBufferListPointer(abl).first, let data = buf.mData else { return 0 }
+        var m: Float = 0
+        if asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0, asbd.mBitsPerChannel == 32 {
+            let p = data.assumingMemoryBound(to: Float.self)
+            for i in stride(from: 0, to: Int(buf.mDataByteSize) / 4, by: 4) { m = max(m, abs(p[i])) }
+        } else if asbd.mBitsPerChannel == 16 {
+            let p = data.assumingMemoryBound(to: Int16.self)
+            for i in stride(from: 0, to: Int(buf.mDataByteSize) / 2, by: 4) { m = max(m, abs(Float(p[i])) / 32768) }
+        }
+        return min(1, m)
     }
 
     /// Сдвиг всех таймингов буфера на offset (убирает паузы из таймлайна).

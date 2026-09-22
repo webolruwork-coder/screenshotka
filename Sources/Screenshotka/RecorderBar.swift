@@ -16,11 +16,20 @@ final class RecorderBarController {
 
     private var stopButton: NSButton!
     private var pauseButton: HoverButton!
+    private var micMeter: NSImageView!
+    private var micStep = -1   // последний показанный уровень (0…10), чтобы не перерисовывать без изменений
 
     init(recorder: ScreenRecorder) {
         self.recorder = recorder
         buildPanel()
         startTimer()
+        // Индикатор микрофона: как в Zoom — иконка «наполняется», пока говоришь.
+        // Видно сразу, пишется ли звук (а не после просмотра готового файла).
+        if recorder.isMicEnabled {
+            recorder.onMicLevel = { [weak self] peak in
+                DispatchQueue.main.async { self?.showMicLevel(peak) }
+            }
+        }
         // Пробел — остановить запись (пока приложение активно). Не перехватываем,
         // если фокус в текстовом поле нашего окна (например, открыт редактор).
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
@@ -88,7 +97,15 @@ final class RecorderBarController {
         // Красная «пилюля» (стоп+таймер) — СПРАВА, ровно как кнопка «Запись» в панели
         // опций: прямой переход «Запись» → «Стоп» без перескока действия слева-направо.
         // Вторичные контролы (пауза/заново/удалить/ещё) — слева.
-        let row = NSStackView(views: [pause, restart, del, more, stop])
+        let meter = NSImageView()
+        meter.imageScaling = .scaleProportionallyUpOrDown
+        meter.translatesAutoresizingMaskIntoConstraints = false
+        meter.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        meter.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        micMeter = meter
+        showMicLevel(0)
+
+        let row = NSStackView(views: [meter, pause, restart, del, more, stop])
         row.orientation = .horizontal
         row.spacing = 10
         row.alignment = .centerY
@@ -142,6 +159,32 @@ final class RecorderBarController {
         return b
     }
 
+    // MARK: - Mic meter
+
+    /// peak 0…1 → шкала в дБ (−50…0) → 11 ступеней; уровень падает плавно, а не рывком.
+    private func showMicLevel(_ peak: Float) {
+        guard recorder.isMicEnabled else {
+            if micStep != -2 {
+                micStep = -2
+                micMeter.image = NSImage(systemSymbolName: "mic.slash", accessibilityDescription: NSLocalizedString("Микрофон выключен", comment: ""))?
+                    .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+                micMeter.contentTintColor = Theme.textSecondary
+                micMeter.toolTip = NSLocalizedString("Микрофон выключен", comment: "")
+            }
+            return
+        }
+        let db = 20 * log10(max(peak, 1e-5))
+        let level = min(1, max(0, (db + 50) / 50))
+        let step = max(Int((level * 10).rounded()), max(micStep - 1, 0))   // спад не быстрее ступени за буфер
+        guard step != micStep else { return }
+        micStep = step
+        micMeter.image = NSImage(systemSymbolName: "mic.and.signal.meter.fill", variableValue: Double(step) / 10,
+                                 accessibilityDescription: NSLocalizedString("Уровень микрофона", comment: ""))?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+        micMeter.contentTintColor = step > 0 ? NSColor.systemGreen : Theme.textSecondary
+        micMeter.toolTip = NSLocalizedString("Уровень микрофона", comment: "")
+    }
+
     // MARK: - Timer
 
     private func startTimer() {
@@ -172,6 +215,7 @@ final class RecorderBarController {
             pauseButton.toolTip = NSLocalizedString("Пауза", comment: "")
         } else {
             recorder.pause(); paused = true
+            micStep = 1; showMicLevel(0)   // на паузе звук не пишется — индикатор в ноль
             pauseButton.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: NSLocalizedString("Продолжить", comment: ""))?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
             pauseButton.toolTip = NSLocalizedString("Продолжить", comment: "")
@@ -240,6 +284,7 @@ final class RecorderBarController {
     @objc private func openFolder() { NSWorkspace.shared.open(Settings.shared.saveFolder) }
 
     private func close(url: URL?) {
+        recorder.onMicLevel = nil
         timer?.invalidate()
         timer = nil
         panel?.orderOut(nil)
