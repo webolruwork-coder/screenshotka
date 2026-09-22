@@ -272,6 +272,8 @@ final class RecordOptionsBar: NSObject {
     private var micButton: HoverButton!
     private var sysButton: HoverButton!
     private var camButton: HoverButton!
+    private var recordButton: HoverButton!
+    private var row: NSStackView!
 
     /// rect — выбранная область в глобальных координатах Cocoa.
     init(near rect: CGRect) {
@@ -321,14 +323,14 @@ final class RecordOptionsBar: NSObject {
             guard let self else { return }
             self.sys.toggle(); Settings.shared.systemAudioEnabled = self.sys
             self.refresh(self.sysButton, on: self.sys, on0: "speaker.wave.2.fill", off0: "speaker.slash.fill")
+            self.refreshRecordTitle()
         }
         refreshMic()
         refreshCamera()
 
         let record = HoverButton(title: "", target: nil, action: nil)
         record.isBordered = false
-        record.attributedTitle = NSAttributedString(string: NSLocalizedString("Запись", comment: ""), attributes: [
-            .foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
+        recordButton = record
         record.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: NSLocalizedString("Запись", comment: ""))?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
         record.imagePosition = .imageLeading
@@ -342,6 +344,7 @@ final class RecordOptionsBar: NSObject {
         record.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
         record.heightAnchor.constraint(equalToConstant: 30).isActive = true
         record.onAction = { [weak self] in self?.start() }
+        refreshRecordTitle()
 
         let close = HoverButton(title: "", target: nil, action: nil)
         close.isBordered = false
@@ -352,6 +355,7 @@ final class RecordOptionsBar: NSObject {
         close.onAction = { [weak self] in self?.cancel() }
 
         let row = NSStackView(views: [dims, micButton, camButton, sysButton, record, close])
+        self.row = row
         row.orientation = .horizontal
         row.spacing = 10
         row.alignment = .centerY
@@ -459,6 +463,19 @@ final class RecordOptionsBar: NSObject {
             ? String(format: NSLocalizedString("Микрофон: %@", comment: ""), device?.localizedName ?? "—")
             : NSLocalizedString("Микрофон выключен", comment: "")
     }
+    /// Оба источника звука выключены — говорим об этом прямо на красной кнопке:
+    /// серые перечёркнутые иконки легко не заметить, и запись выходит немой.
+    private func refreshRecordTitle() {
+        let silent = !mic && !sys
+        let title = silent ? NSLocalizedString("Запись без звука", comment: "") : NSLocalizedString("Запись", comment: "")
+        recordButton.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
+        // Панель уже показана — подогнать ширину, не сдвигая центр.
+        guard let p = panel, let row else { return }
+        let w = row.fittingSize.width
+        let f = p.frame
+        p.setFrame(NSRect(x: f.midX - w / 2, y: f.minY, width: w, height: f.height), display: true)
+    }
     private func refreshCamera() {
         let device = selectedCameraDevice()
         let symbol = camera ? Self.cameraSymbol(for: device?.localizedName ?? "") : "video.slash"
@@ -540,6 +557,7 @@ final class RecordOptionsBar: NSObject {
         else if let d = sender.representedObject as? AVCaptureDevice { mic = true; micDeviceID = d.uniqueID }
         Settings.shared.micEnabled = mic; Settings.shared.micDeviceID = micDeviceID
         refreshMic()
+        refreshRecordTitle()
     }
 
     private func showCameraMenu(_ b: HoverButton) {

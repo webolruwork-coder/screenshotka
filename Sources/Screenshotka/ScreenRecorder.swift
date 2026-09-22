@@ -113,7 +113,13 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         if systemAudio { config.capturesAudio = true }
         if mic, #available(macOS 15.0, *) {
             config.captureMicrophone = true
-            if let id = micDeviceID { config.microphoneCaptureDeviceID = id }
+            // Сохранённый микрофон мог отключиться (AirPods в кейсе, USB-микрофон вынут):
+            // с ID несуществующего устройства SCK молча не отдаёт ни одного сэмпла —
+            // файл выходит вовсе без звука. Нет устройства → nil → системный микрофон
+            // по умолчанию (его же показывает и панель опций).
+            if let id = micDeviceID, AVCaptureDevice(uniqueID: id) != nil {
+                config.microphoneCaptureDeviceID = id
+            }
         }
 
         try setupWriter(pxW: pxW, pxH: pxH, fps: fps, mic: mic, systemAudio: systemAudio)
