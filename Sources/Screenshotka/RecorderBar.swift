@@ -17,7 +17,11 @@ final class RecorderBarController {
     private var stopButton: NSButton!
     private var pauseButton: HoverButton!
     private var micMeter: NSImageView!
-    private var micStep = -1   // последний показанный уровень (0…10), чтобы не перерисовывать без изменений
+    private var micStep = -1            // последняя показанная ступень (0…8), чтобы не перерисовывать без изменений
+    // Огибающая уровня — только на очереди рекордера (колбэк onMicLevel).
+    private var micEnvelope: Float = 0
+    private var micLastSample: CFTimeInterval = 0
+    private var micLastRedraw: CFTimeInterval = 0
 
     init(recorder: ScreenRecorder) {
         self.recorder = recorder
@@ -25,9 +29,22 @@ final class RecorderBarController {
         startTimer()
         // Индикатор микрофона: как в Zoom — иконка «наполняется», пока говоришь.
         // Видно сразу, пишется ли звук (а не после просмотра готового файла).
+        // Буферы приходят ~100 раз/с и пик в них скачет — рисовать каждый нельзя
+        // (мигает). Поэтому: шумовой порог, огибающая с быстрой атакой и спадом
+        // ~250 мс, перерисовка не чаще 25 раз/с.
         if recorder.isMicEnabled {
             recorder.onMicLevel = { [weak self] peak in
-                DispatchQueue.main.async { self?.showMicLevel(peak) }
+                guard let self else { return }
+                let db = 20 * log10(max(peak, 1e-5))
+                let level = min(1, max(0, (db + 42) / 34))        // тише −42 дБ — тишина/шум, −8 дБ — максимум
+                let now = CACurrentMediaTime()
+                let release = Float(exp(-(now - self.micLastSample) / 0.25))
+                self.micLastSample = now
+                self.micEnvelope = max(level, self.micEnvelope * release)
+                guard now - self.micLastRedraw >= 1.0 / 25 else { return }
+                self.micLastRedraw = now
+                let e = self.micEnvelope
+                DispatchQueue.main.async { self.showMicLevel(e) }
             }
         }
         // Пробел — остановить запись (пока приложение активно). Не перехватываем,
@@ -98,7 +115,7 @@ final class RecorderBarController {
         // опций: прямой переход «Запись» → «Стоп» без перескока действия слева-направо.
         // Вторичные контролы (пауза/заново/удалить/ещё) — слева.
         let meter = NSImageView()
-        meter.imageScaling = .scaleProportionallyUpOrDown
+        meter.imageScaling = .scaleNone   // 14pt, как у остальных иконок панели
         meter.translatesAutoresizingMaskIntoConstraints = false
         meter.widthAnchor.constraint(equalToConstant: 28).isActive = true
         meter.heightAnchor.constraint(equalToConstant: 28).isActive = true
@@ -161,8 +178,28 @@ final class RecorderBarController {
 
     // MARK: - Mic meter
 
-    /// peak 0…1 → шкала в дБ (−50…0) → 11 ступеней; уровень падает плавно, а не рывком.
-    private func showMicLevel(_ peak: Float) {
+    private static let micSteps = 8
+    /// «Наполняющийся» микрофон: тот же 14pt-символ, что и другие иконки, приглушённый,
+    /// а снизу на высоту уровня — цветом акцента (как индикатор в Zoom). Без чужих
+    /// цветов и без пляшущих точек, кадры закэшированы по ступеням.
+    private static let micImages: [NSImage] = (0...micSteps).map { step in
+        let level = CGFloat(step) / CGFloat(micSteps)
+        let base = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)) ?? NSImage()
+        return NSImage(size: base.size, flipped: false) { rect in
+            base.draw(in: rect); Theme.textSecondary.set(); rect.fill(using: .sourceAtop)
+            if level > 0 {
+                NSGraphicsContext.saveGraphicsState()
+                NSRect(x: 0, y: 0, width: rect.width, height: (rect.height * level).rounded()).clip()
+                base.draw(in: rect); Theme.accent.set(); rect.fill(using: .sourceAtop)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            return true
+        }
+    }
+
+    /// level 0…1 (уже сглаженная огибающая) → ступень шкалы.
+    private func showMicLevel(_ level: Float) {
         guard recorder.isMicEnabled else {
             if micStep != -2 {
                 micStep = -2
@@ -173,16 +210,12 @@ final class RecorderBarController {
             }
             return
         }
-        let db = 20 * log10(max(peak, 1e-5))
-        let level = min(1, max(0, (db + 50) / 50))
-        let step = max(Int((level * 10).rounded()), max(micStep - 1, 0))   // спад не быстрее ступени за буфер
+        let step = Int((level * Float(Self.micSteps)).rounded())
         guard step != micStep else { return }
         micStep = step
-        micMeter.image = NSImage(systemSymbolName: "mic.and.signal.meter.fill", variableValue: Double(step) / 10,
-                                 accessibilityDescription: NSLocalizedString("Уровень микрофона", comment: ""))?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
-        micMeter.contentTintColor = step > 0 ? NSColor.systemGreen : Theme.textSecondary
+        micMeter.image = Self.micImages[step]
         micMeter.toolTip = NSLocalizedString("Уровень микрофона", comment: "")
+        micMeter.setAccessibilityLabel(NSLocalizedString("Уровень микрофона", comment: ""))
     }
 
     // MARK: - Timer
@@ -215,7 +248,7 @@ final class RecorderBarController {
             pauseButton.toolTip = NSLocalizedString("Пауза", comment: "")
         } else {
             recorder.pause(); paused = true
-            micStep = 1; showMicLevel(0)   // на паузе звук не пишется — индикатор в ноль
+            micEnvelope = 0; showMicLevel(0)   // на паузе звук не пишется — индикатор в ноль
             pauseButton.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: NSLocalizedString("Продолжить", comment: ""))?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
             pauseButton.toolTip = NSLocalizedString("Продолжить", comment: "")
